@@ -5,6 +5,7 @@ import (
 	"log"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -46,6 +47,8 @@ type traceContext struct {
 	Bindings    map[string]string
 }
 
+var inlineValuesRefPattern = regexp.MustCompile(`\$?\.Values(?:\.[A-Za-z0-9_-]+)+`)
+
 func TraceTemplates(cliOptions cmd.Options) {
 	ch, err := loader.Load(cliOptions.Chart)
 	if err != nil {
@@ -76,7 +79,6 @@ func TraceTemplates(cliOptions cmd.Options) {
 			ChartPrefix: chartValuePrefix(target),
 			DotExpr:     ".",
 		}
-		printValueHints("  ", node.ValueRefs, ctx, cliOptions.TraceValues)
 		printCalls(target, "  ", graph, sources, map[string]bool{target: true}, ctx, cliOptions.TraceValues)
 	}
 }
@@ -192,6 +194,7 @@ func printCalls(name, indent string, graph map[string]graphNode, sources map[str
 			fmt.Printf("%s  source: %s\n", indent, snippet)
 		}
 		nextCtx := deriveTraceContext(edge, ctx)
+		printEdgeValueHints(indent+"  ", edge, ctx, showValues)
 		if child, ok := graph[edge.Target]; ok {
 			printValueHints(indent+"  ", child.ValueRefs, nextCtx, showValues)
 		}
@@ -588,6 +591,56 @@ func inferOverridePaths(refs []string, ctx traceContext) []string {
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+func printEdgeValueHints(indent string, edge callEdge, ctx traceContext, enabled bool) {
+	if !enabled {
+		return
+	}
+
+	candidateRefs := make([]string, 0, len(edge.Bindings)+1)
+	if edge.DataExpr != "" && edge.DataExpr != "." {
+		candidateRefs = append(candidateRefs, edge.DataExpr)
+	}
+	for _, value := range edge.Bindings {
+		candidateRefs = append(candidateRefs, value)
+	}
+	candidateRefs = append(candidateRefs, collectInlineValueRefs(edge.Context)...)
+
+	paths := inferOverridePaths(candidateRefs, ctx)
+	if len(paths) == 0 {
+		return
+	}
+
+	fmt.Printf("%spassed values:\n", indent)
+	for _, overridePath := range paths {
+		fmt.Printf("%s  path: %s\n", indent, overridePath)
+		for _, line := range yamlSnippetLines(overridePath) {
+			fmt.Printf("%s  %s\n", indent, line)
+		}
+	}
+}
+
+func collectInlineValueRefs(text string) []string {
+	if text == "" {
+		return nil
+	}
+	matches := inlineValuesRefPattern.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	refs := make([]string, 0, len(matches))
+	seen := make(map[string]bool)
+	for _, match := range matches {
+		if strings.HasPrefix(match, "$.") {
+			match = "." + strings.TrimPrefix(match, "$.")
+		}
+		if !seen[match] {
+			seen[match] = true
+			refs = append(refs, match)
+		}
+	}
+	return refs
 }
 
 func resolveExpr(expr string, ctx traceContext) (string, bool) {
