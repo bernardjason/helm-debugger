@@ -29,12 +29,21 @@ type callEdge struct {
 	Dynamic  bool
 	Location string
 	Context  string
+	DataExpr string
+	Bindings map[string]string
 }
 
 type graphNode struct {
-	Name   string
-	Source string
-	Calls  []callEdge
+	Name      string
+	Source    string
+	Calls     []callEdge
+	ValueRefs []string
+}
+
+type traceContext struct {
+	ChartPrefix string
+	DotExpr     string
+	Bindings    map[string]string
 }
 
 func TraceTemplates(cliOptions cmd.Options) {
@@ -48,8 +57,11 @@ func TraceTemplates(cliOptions cmd.Options) {
 		log.Fatal(err)
 	}
 
-	targets := selectTraceTargets(cliOptions.Template, graph, roots)
+	targets := selectTraceTargets(cliOptions.Template, cliOptions.Helper, graph, roots)
 	if len(targets) == 0 {
+		if cliOptions.Helper != "" {
+			log.Fatalf("no helpers matched %q", cliOptions.Helper)
+		}
 		log.Fatalf("no templates matched %q", cliOptions.Template)
 	}
 
@@ -59,10 +71,13 @@ func TraceTemplates(cliOptions cmd.Options) {
 		}
 
 		node := graph[target]
-		if cliOptions.Template != "" || cliOptions.Template == node.Source {
-			fmt.Printf("%s (%s)\n", node.Name, node.Source)
-			printCalls(target, "  ", graph, sources, map[string]bool{target: true})
+		fmt.Printf("%s (%s)\n", node.Name, node.Source)
+		ctx := traceContext{
+			ChartPrefix: chartValuePrefix(target),
+			DotExpr:     ".",
 		}
+		printValueHints("  ", node.ValueRefs, ctx, cliOptions.TraceValues)
+		printCalls(target, "  ", graph, sources, map[string]bool{target: true}, ctx, cliOptions.TraceValues)
 	}
 }
 
@@ -95,9 +110,10 @@ func buildCallGraph(ch *chart.Chart) (map[string]graphNode, []string, map[string
 		}
 
 		graph[template.Name()] = graphNode{
-			Name:   template.Name(),
-			Source: template.Tree.ParseName,
-			Calls:  collectCalls(template.Tree, template.Tree.Root),
+			Name:      template.Name(),
+			Source:    template.Tree.ParseName,
+			Calls:     collectCalls(template.Tree, template.Tree.Root),
+			ValueRefs: collectValueRefs(template.Tree.Root),
 		}
 	}
 
@@ -114,13 +130,14 @@ func buildCallGraph(ch *chart.Chart) (map[string]graphNode, []string, map[string
 	return graph, roots, sources, nil
 }
 
-func selectTraceTargets(filter string, graph map[string]graphNode, roots []string) []string {
-	if filter == "" {
-		return roots
+func selectTraceTargets(templateFilter, helperFilter string, graph map[string]graphNode, roots []string) []string {
+	if helperFilter != "" {
+		return matchGraphTargets(helperFilter, graph)
 	}
 
-	if _, ok := graph[filter]; ok {
-		return []string{filter}
+	filter := templateFilter
+	if filter == "" {
+		return roots
 	}
 
 	var matches []string
@@ -129,10 +146,28 @@ func selectTraceTargets(filter string, graph map[string]graphNode, roots []strin
 			matches = append(matches, root)
 		}
 	}
+	if len(matches) == 0 {
+		return matchGraphTargets(filter, graph)
+	}
 	return matches
 }
 
-func printCalls(name, indent string, graph map[string]graphNode, sources map[string]string, stack map[string]bool) {
+func matchGraphTargets(filter string, graph map[string]graphNode) []string {
+	if _, ok := graph[filter]; ok {
+		return []string{filter}
+	}
+
+	var matches []string
+	for name := range graph {
+		if strings.HasSuffix(name, filter) {
+			matches = append(matches, name)
+		}
+	}
+	sort.Strings(matches)
+	return matches
+}
+
+func printCalls(name, indent string, graph map[string]graphNode, sources map[string]string, stack map[string]bool, ctx traceContext, showValues bool) {
 	node, ok := graph[name]
 	if !ok {
 		return
@@ -156,6 +191,10 @@ func printCalls(name, indent string, graph map[string]graphNode, sources map[str
 		if snippet := sourceSnippet(edge.Location, sources); snippet != "" {
 			fmt.Printf("%s  source: %s\n", indent, snippet)
 		}
+		nextCtx := deriveTraceContext(edge, ctx)
+		if child, ok := graph[edge.Target]; ok {
+			printValueHints(indent+"  ", child.ValueRefs, nextCtx, showValues)
+		}
 
 		if stack[edge.Target] {
 			fmt.Printf("%s  cycle\n", indent)
@@ -164,7 +203,7 @@ func printCalls(name, indent string, graph map[string]graphNode, sources map[str
 
 		if _, ok := graph[edge.Target]; ok {
 			stack[edge.Target] = true
-			printCalls(edge.Target, indent+"  ", graph, sources, stack)
+			printCalls(edge.Target, indent+"  ", graph, sources, stack, nextCtx, showValues)
 			delete(stack, edge.Target)
 		}
 	}
@@ -200,7 +239,8 @@ func walkNode(tree *parse.Tree, node parse.Node, emit func(callEdge)) {
 		walkPipe(tree, n.Pipe, emit)
 	case *parse.TemplateNode:
 		location, context := nodeErrorContext(tree, n)
-		emit(callEdge{Kind: "template", Target: n.Name, Location: location, Context: context})
+		dataExpr, bindings := analyzePipeData(n.Pipe)
+		emit(callEdge{Kind: "template", Target: n.Name, Location: location, Context: context, DataExpr: dataExpr, Bindings: bindings})
 		if n.Pipe != nil {
 			walkPipe(tree, n.Pipe, emit)
 		}
@@ -244,13 +284,15 @@ func walkCommand(tree *parse.Tree, cmd *parse.CommandNode, emit func(callEdge)) 
 		switch fn {
 		case "include":
 			target, dynamic := stringArg(cmd, 1)
-			emit(callEdge{Kind: "include", Target: target, Dynamic: dynamic, Location: location, Context: context})
+			dataExpr, bindings := analyzeCommandData(cmd, 2)
+			emit(callEdge{Kind: "include", Target: target, Dynamic: dynamic, Location: location, Context: context, DataExpr: dataExpr, Bindings: bindings})
 		case "tpl":
 			target, dynamic := stringArg(cmd, 1)
 			if target == "" {
 				target = "<tpl>"
 			}
-			emit(callEdge{Kind: "tpl", Target: target, Dynamic: dynamic, Location: location, Context: context})
+			dataExpr, bindings := analyzeCommandData(cmd, 2)
+			emit(callEdge{Kind: "tpl", Target: target, Dynamic: dynamic, Location: location, Context: context, DataExpr: dataExpr, Bindings: bindings})
 		}
 	}
 
@@ -291,6 +333,371 @@ func nodeErrorContext(tree *parse.Tree, node parse.Node) (string, string) {
 		return "", ""
 	}
 	return tree.ErrorContext(node)
+}
+
+func collectValueRefs(root parse.Node) []string {
+	refs := make([]string, 0)
+	seen := make(map[string]bool)
+	var walk func(parse.Node)
+	walk = func(node parse.Node) {
+		if node == nil {
+			return
+		}
+		switch n := node.(type) {
+		case *parse.ListNode:
+			if n == nil {
+				return
+			}
+			for _, child := range n.Nodes {
+				walk(child)
+			}
+		case *parse.ActionNode:
+			if n == nil {
+				return
+			}
+			walkPipeRefs(n.Pipe, &refs, seen)
+		case *parse.TemplateNode:
+			if n == nil {
+				return
+			}
+			walkPipeRefs(n.Pipe, &refs, seen)
+		case *parse.IfNode:
+			if n == nil {
+				return
+			}
+			walkPipeRefs(n.Pipe, &refs, seen)
+			walk(n.List)
+			walk(n.ElseList)
+		case *parse.RangeNode:
+			if n == nil {
+				return
+			}
+			walkPipeRefs(n.Pipe, &refs, seen)
+			walk(n.List)
+			walk(n.ElseList)
+		case *parse.WithNode:
+			if n == nil {
+				return
+			}
+			walkPipeRefs(n.Pipe, &refs, seen)
+			walk(n.List)
+			walk(n.ElseList)
+		}
+	}
+	walk(root)
+	sort.Strings(refs)
+	return refs
+}
+
+func walkPipeRefs(pipe *parse.PipeNode, refs *[]string, seen map[string]bool) {
+	if pipe == nil {
+		return
+	}
+	for _, cmd := range pipe.Cmds {
+		for _, arg := range cmd.Args {
+			walkArgRefs(arg, refs, seen)
+		}
+	}
+}
+
+func walkArgRefs(node parse.Node, refs *[]string, seen map[string]bool) {
+	if node == nil {
+		return
+	}
+	switch n := node.(type) {
+	case *parse.FieldNode:
+		if n == nil {
+			return
+		}
+		addValueRef(n.String(), refs, seen)
+	case *parse.VariableNode:
+		if n == nil {
+			return
+		}
+		addValueRef(n.String(), refs, seen)
+	case *parse.ChainNode:
+		if n == nil {
+			return
+		}
+		addValueRef(n.String(), refs, seen)
+		if n.Node != nil {
+			walkArgRefs(n.Node, refs, seen)
+		}
+	case *parse.PipeNode:
+		if n == nil {
+			return
+		}
+		walkPipeRefs(n, refs, seen)
+	case *parse.CommandNode:
+		if n == nil {
+			return
+		}
+		for _, arg := range n.Args {
+			walkArgRefs(arg, refs, seen)
+		}
+	}
+}
+
+func addValueRef(ref string, refs *[]string, seen map[string]bool) {
+	if ref == "" {
+		return
+	}
+	if strings.HasPrefix(ref, ".Values.") || strings.HasPrefix(ref, "$.Values.") {
+		if !seen[ref] {
+			seen[ref] = true
+			*refs = append(*refs, ref)
+		}
+		return
+	}
+	if !strings.HasPrefix(ref, ".") {
+		return
+	}
+	top := strings.TrimPrefix(ref, ".")
+	if top == "" {
+		return
+	}
+	if strings.Contains(top, ".") {
+		top = top[:strings.Index(top, ".")]
+	}
+	switch top {
+	case "Chart", "Release", "Capabilities", "Template", "Files", "Subcharts":
+		return
+	}
+	if !seen[ref] {
+		seen[ref] = true
+		*refs = append(*refs, ref)
+	}
+}
+
+func analyzeCommandData(cmd *parse.CommandNode, index int) (string, map[string]string) {
+	if cmd == nil || len(cmd.Args) <= index {
+		return ".", nil
+	}
+	return analyzeDataNode(cmd.Args[index])
+}
+
+func analyzePipeData(pipe *parse.PipeNode) (string, map[string]string) {
+	if pipe == nil || len(pipe.Cmds) == 0 {
+		return ".", nil
+	}
+	if len(pipe.Cmds) == 1 {
+		return analyzeCommandLike(pipe.Cmds[0])
+	}
+	return pipe.String(), nil
+}
+
+func analyzeDataNode(node parse.Node) (string, map[string]string) {
+	switch n := node.(type) {
+	case *parse.PipeNode:
+		return analyzePipeData(n)
+	case *parse.CommandNode:
+		return analyzeCommandLike(n)
+	default:
+		if node == nil {
+			return ".", nil
+		}
+		return node.String(), nil
+	}
+}
+
+func analyzeCommandLike(cmd *parse.CommandNode) (string, map[string]string) {
+	if cmd == nil {
+		return ".", nil
+	}
+	if firstIdentifier(cmd) == "dict" {
+		return ".", parseDictBindings(cmd)
+	}
+	if len(cmd.Args) == 1 {
+		return cmd.Args[0].String(), nil
+	}
+	return cmd.String(), nil
+}
+
+func parseDictBindings(cmd *parse.CommandNode) map[string]string {
+	bindings := make(map[string]string)
+	for i := 1; i+1 < len(cmd.Args); i += 2 {
+		keyNode, ok := cmd.Args[i].(*parse.StringNode)
+		if !ok {
+			continue
+		}
+		bindings[keyNode.Text] = cmd.Args[i+1].String()
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	return bindings
+}
+
+func deriveTraceContext(edge callEdge, parent traceContext) traceContext {
+	child := traceContext{
+		ChartPrefix: parent.ChartPrefix,
+		DotExpr:     ".",
+	}
+	if edge.DataExpr != "" {
+		if resolved, ok := resolveExpr(edge.DataExpr, parent); ok {
+			child.DotExpr = resolved
+		} else {
+			child.DotExpr = edge.DataExpr
+		}
+	}
+	if len(edge.Bindings) > 0 {
+		child.DotExpr = "."
+		child.Bindings = make(map[string]string, len(edge.Bindings))
+		for key, value := range edge.Bindings {
+			if resolved, ok := resolveExpr(value, parent); ok {
+				child.Bindings[key] = resolved
+			} else {
+				child.Bindings[key] = value
+			}
+		}
+	}
+	return child
+}
+
+func printValueHints(indent string, refs []string, ctx traceContext, enabled bool) {
+	if !enabled {
+		return
+	}
+	paths := inferOverridePaths(refs, ctx)
+	if len(paths) == 0 {
+		return
+	}
+	fmt.Printf("%sinferred values:\n", indent)
+	for _, overridePath := range paths {
+		fmt.Printf("%s  path: %s\n", indent, overridePath)
+		for _, line := range yamlSnippetLines(overridePath) {
+			fmt.Printf("%s  %s\n", indent, line)
+		}
+	}
+}
+
+func inferOverridePaths(refs []string, ctx traceContext) []string {
+	seen := make(map[string]bool)
+	paths := make([]string, 0)
+	for _, ref := range refs {
+		resolved, ok := resolveExpr(ref, ctx)
+		if !ok {
+			continue
+		}
+		overridePath, ok := valuesExprToOverridePath(resolved, ctx.ChartPrefix)
+		if !ok || seen[overridePath] {
+			continue
+		}
+		seen[overridePath] = true
+		paths = append(paths, overridePath)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func resolveExpr(expr string, ctx traceContext) (string, bool) {
+	for range 12 {
+		expr = strings.TrimSpace(expr)
+		if expr == "" {
+			return "", false
+		}
+		if strings.HasPrefix(expr, "$.") {
+			expr = "." + strings.TrimPrefix(expr, "$.")
+		}
+		if expr == "." {
+			if ctx.DotExpr == "" {
+				return ".", true
+			}
+			if ctx.DotExpr == expr {
+				return expr, true
+			}
+			expr = ctx.DotExpr
+			continue
+		}
+		if strings.HasPrefix(expr, ".Values") {
+			return expr, true
+		}
+		if !strings.HasPrefix(expr, ".") {
+			return expr, true
+		}
+		path := strings.TrimPrefix(expr, ".")
+		first, rest := splitPath(path)
+		if base, ok := ctx.Bindings[first]; ok {
+			expr = joinExpr(base, rest)
+			continue
+		}
+		if ctx.DotExpr != "" && ctx.DotExpr != "." {
+			expr = joinExpr(ctx.DotExpr, path)
+			continue
+		}
+		return expr, true
+	}
+	return expr, false
+}
+
+func splitPath(path string) (string, string) {
+	if path == "" {
+		return "", ""
+	}
+	index := strings.Index(path, ".")
+	if index == -1 {
+		return path, ""
+	}
+	return path[:index], path[index+1:]
+}
+
+func joinExpr(base, rest string) string {
+	base = strings.TrimSpace(base)
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return base
+	}
+	if base == "." {
+		return "." + rest
+	}
+	return strings.TrimRight(base, ".") + "." + rest
+}
+
+func valuesExprToOverridePath(expr, chartPrefix string) (string, bool) {
+	path := ""
+	switch {
+	case expr == ".Values":
+		path = ""
+	case strings.HasPrefix(expr, ".Values."):
+		path = strings.TrimPrefix(expr, ".Values.")
+	default:
+		return "", false
+	}
+	if chartPrefix == "" {
+		return path, path != ""
+	}
+	if path == "" {
+		return chartPrefix, true
+	}
+	return chartPrefix + "." + path, true
+}
+
+func chartValuePrefix(templateName string) string {
+	parts := strings.Split(templateName, "/")
+	prefix := make([]string, 0)
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "charts" && i+1 < len(parts) {
+			prefix = append(prefix, parts[i+1])
+		}
+	}
+	return strings.Join(prefix, ".")
+}
+
+func yamlSnippetLines(path string) []string {
+	if path == "" {
+		return nil
+	}
+	parts := strings.Split(path, ".")
+	lines := make([]string, 0, len(parts))
+	for i, part := range parts {
+		indent := strings.Repeat("  ", i)
+		value := ":"
+		if i == len(parts)-1 {
+			value = ": <override>"
+		}
+		lines = append(lines, indent+part+value)
+	}
+	return lines
 }
 
 func sourceSnippet(location string, sources map[string]string) string {
