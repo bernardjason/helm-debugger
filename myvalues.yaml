@@ -1,0 +1,10 @@
+spire-agent:
+  image:
+    registry: your-registry.example.com
+    repository: your-team/spire-agent
+    tag: "1.8.5-customZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+  socketAlternate:
+    image:
+      registry: your-registry.example.com
+      repository: your-team/bash
+      tag: "1.8.5-custom"

@@ -1,0 +1,129 @@
+---
+# Source: spire/charts/spire-agent/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: "my-release-agent"
+  namespace: "default"
+  labels:
+    helm.sh/chart: "spire-agent-0.1.0"
+    app.kubernetes.io/name: "agent"
+    app.kubernetes.io/instance: "my-release"
+    app.kubernetes.io/version: "1.14.2"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/component: "default"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "agent"
+      app.kubernetes.io/instance: "my-release"
+      app.kubernetes.io/component: "default"
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: spire-agent
+        checksum/config: "3568fbd65ee745fc11a298e9c15e18d28721e736829e4a97fedb074985ba6ec4"
+      labels:
+        app.kubernetes.io/name: "agent"
+        app.kubernetes.io/instance: "my-release"
+        app.kubernetes.io/component: "default"
+    spec:
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: "my-release-agent"
+      securityContext:
+        {}
+      
+      initContainers:
+        - name: ensure-alternate-names
+          image: "your-registry.example.com/your-team/bash:1.8.5-custom"
+          # debug: "deleteHooks:\n  enabled: true\n  resources: {}\nimagePullSecrets: []\ninstallAndUpgradeHooks:\n  enabled: true\n  resources: {}\nk8s:\n  clusterDomain: cluster.local\nspire:\n  bundleConfigMap: \"\"\n  caSubject:\n    commonName: \"\"\n    country: \"\"\n    organization: \"\"\n  clusterName: example-cluster\n  image:\n    registry: \"\"\n  ingressControllerType: \"\"\n  jwtIssuer: \"\"\n  namespaces:\n    create: false\n    server:\n      annotations: {}\n      create: false\n      labels: {}\n      name: spire-server\n    system:\n      annotations: {}\n      create: false\n      labels: {}\n      name: spire-system\n  persistence:\n    storageClass: null\n  recommendations:\n    enabled: false\n    namespaceLayout: true\n    namespacePSS: true\n    priorityClassName: true\n    prometheus: true\n    securityContexts: true\n    strictMode: true\n  strictMode: false\n  tools:\n    kubectl:\n      tag: \"\"\n  trustDomain: example.org\n  upstreamServerAddress: \"\""
+          imagePullPolicy: "IfNotPresent"
+          command: ["bash", "-xc"]
+          args:
+            - |
+              cd /run/spire/agent-sockets
+              L=`readlink socket`
+              [ "x$L" != "xspire-agent.sock" ] && rm -f socket
+              [ ! -L socket ] && ln -s spire-agent.sock socket
+              L=`readlink api.sock`
+              [ "x$L" != "xspire-agent.sock" ] && rm -f api.sock
+              [ ! -L api.sock ] && ln -s spire-agent.sock api.sock
+              [ -L spire-agent.sock ] && rm -f spire-agent.sock
+              exit 0
+          resources:
+            {}
+          volumeMounts:
+            - name: spire-agent-socket-dir
+              mountPath: /run/spire/agent-sockets
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+      containers:
+        - name: "spire-agent"
+          image: "your-registry.example.com/your-team/spire-agent:1.8.5-custom"
+          imagePullPolicy: "IfNotPresent"
+          args: ["-config", "/opt/spire/conf/agent/agent.conf"]
+          securityContext:
+            {}
+          env:
+            - name: PATH
+              value: "/opt/spire/bin:/bin"
+          ports:
+            - containerPort: 9982
+              name: healthz
+          volumeMounts:
+            - name: spire-config
+              mountPath: /opt/spire/conf/agent
+              readOnly: true
+            - name: spire-agent-persistence
+              mountPath: /var/lib/spire
+            - name: spire-bundle
+              readOnly: true
+              mountPath: /run/spire/bundle
+            - name: spire-agent-socket-dir
+              mountPath: /tmp/spire-agent/public
+              readOnly: false
+            - name: spire-token
+              mountPath: /var/run/secrets/tokens
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: healthz
+            initialDelaySeconds: 15
+            periodSeconds: 60
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: healthz
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {}
+      volumes:
+        - name: spire-config
+          configMap:
+            name: my-release-agent
+        - name: spire-agent-admin-socket-dir
+          emptyDir: {}
+        - name: spire-agent-persistence
+          emptyDir: {}
+        - name: spire-bundle
+          configMap:
+            name: "spire-bundle"
+        - name: spire-token
+          projected:
+            sources:
+            - serviceAccountToken:
+                path: spire-agent
+                expirationSeconds: 7200
+                audience: spire-server
+        - name: spire-agent-socket-dir
+          hostPath:
+            path: /run/spire/agent-sockets
+            type: DirectoryOrCreate
