@@ -1,3 +1,9 @@
+# NEXT/TODO
+
+Add a GUI. Maybe 3 tab thing? values , trace and trace-values.   All allow values to be update in flight
+
+-----------------------------------------------------------
+
 # MVP features
 
 Render manifests through Helm SDK, then add:

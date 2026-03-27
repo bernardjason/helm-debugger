@@ -1,10 +1,14 @@
 spire-agent:
   image:
-    registry: your-registry.example.com
+    registry: SSSSyour-registry.example.com
     repository: your-team/spire-agent
-    tag: "1.8.5-customZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+    tag: "1.8.5-customZZZZZZZZ"
   socketAlternate:
     image:
       registry: your-registry.example.com
       repository: your-team/bash
       tag: "1.8.5-custom"
+this:
+    is:
+      fred: ghello
+

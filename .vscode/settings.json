@@ -1,8 +1,11 @@
 {
     "cSpell.words": [
+        "Backtab",
         "chartutil",
         "gotpl",
         "missingkey",
-        "Subcharts"
+        "rivo",
+        "Subcharts",
+        "tview"
     ]
 }

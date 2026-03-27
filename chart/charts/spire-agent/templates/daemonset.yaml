@@ -266,7 +266,6 @@ spec:
       containers:
         - name: {{ .Chart.Name | quote }}
           image: {{ template "spire-lib.image" (dict "appVersion" $.Chart.AppVersion "image" .Values.image "global" .Values.global) }}
-          #debug {{ .Values | toYaml | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy | quote }}
           args: ["-config", "/opt/spire/conf/agent/agent.conf"]
           securityContext:
