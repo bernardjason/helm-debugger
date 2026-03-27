@@ -71,21 +71,46 @@ func Run(actionConfig *action.Configuration, cliOptions cmd.Options) error {
 	}
 
 	valuesPath, valuesContent := loadValuesFile(cliOptions)
-	ui := NewDebuggerView(chartContent, "", valuesContent)
+	initialTemplate := selectedTemplateName(strings.Split(chartContent, "\n"), 0)
+	sourceTitle, sourceContent := loadTemplateSource(initialTemplate, cliOptions.Chart)
+	ui := NewDebuggerView(chartContent, sourceContent, "", valuesContent)
+	ui.SetSourceContent(sourceTitle, sourceContent)
 	if valuesPath != "" {
 		ui.ValuesEditor.SetTitle(fmt.Sprintf("values.yaml (%s)", valuesPath))
 	}
 
 	app := tview.NewApplication().EnableMouse(true).EnablePaste(true)
-	focusOrder := []tview.Primitive{ui.ChartView, ui.ValuesEditor}
+	focusOrder := []tview.Primitive{ui.ChartView, ui.SourceView, ui.ValuesEditor}
 	focusIndex := 0
-	errorMessage := ""
+	errorMessage := "Press Ctrl-L to sync edited values into the rendered output."
+	syncEnabled := true
 	chartLines := strings.Split(chartContent, "\n")
+	currentTemplate := initialTemplate
+	updatingFromChart := false
+	updatingFromSource := false
+
+	scrollSourceToTemplateLine := func(templateName, fieldPath string) {
+		if line, ok := traceSession.SourceLineForTemplate(templateName, fieldPath); ok {
+			offset := line - 3
+			if offset < 0 {
+				offset = 0
+			}
+			ui.SourceView.SetOffset(offset, 0)
+		} else {
+			ui.SourceView.SetOffset(0, 0)
+		}
+	}
 
 	updateTrace := func() {
 		row, _, _, _ := ui.ChartView.GetCursor()
 		templateName := selectedTemplateName(chartLines, row)
 		fieldPath := inferYAMLPath(chartLines, row)
+		currentTemplate = templateName
+		title, content := loadTemplateSource(templateName, cliOptions.Chart)
+		ui.SetSourceContent(title, content)
+		updatingFromChart = true
+		scrollSourceToTemplateLine(templateName, fieldPath)
+		updatingFromChart = false
 		ui.SetTraceValues(traceSession.SummaryForTemplate(templateName, fieldPath))
 	}
 
@@ -102,24 +127,53 @@ func Run(actionConfig *action.Configuration, cliOptions cmd.Options) error {
 		ui.SetErrors(buildErrorText())
 	}
 
+	syncChartToSource := func() {
+		if !syncEnabled || updatingFromChart || currentTemplate == "" {
+			return
+		}
+		sourceRow, _, _, _ := ui.SourceView.GetCursor()
+		renderedRow, ok := renderedRowForSourceLine(chartLines, currentTemplate, sourceRow+1, traceSession)
+		if !ok {
+			return
+		}
+		updatingFromSource = true
+		offset := renderedRow - 2
+		if offset < 0 {
+			offset = 0
+		}
+		ui.ChartView.SetOffset(offset, 0)
+		updatingFromSource = false
+	}
+
 	rerender := func() {
 		clearHelmMessages()
 		rendered, renderErr := view.RenderTemplatesWithValuesYAML(actionConfig, cliOptions, ui.ValuesYAML())
 		if renderErr != nil {
+			syncEnabled = false
 			errorMessage = fmt.Sprintf("Rerender failed: %v", renderErr)
 			updateErrors()
 			return
 		}
 		errorMessage = ""
+		syncEnabled = true
 		chartLines = strings.Split(rendered, "\n")
 		ui.SetChartContent(rendered)
 		updateTrace()
 		updateErrors()
 	}
 
-	ui.ChartView.SetMovedFunc(updateTrace)
-	ui.ValuesEditor.SetChangedFunc(func() {
-		rerender()
+	ui.ChartView.SetMovedFunc(func() {
+		if !syncEnabled || updatingFromSource {
+			return
+		}
+		updateTrace()
+	})
+	ui.SourceView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEnter {
+			syncChartToSource()
+			return nil
+		}
+		return readOnlyTextAreaCapture(event)
 	})
 	updateTrace()
 	updateErrors()
@@ -136,6 +190,9 @@ func Run(actionConfig *action.Configuration, cliOptions cmd.Options) error {
 		case tcell.KeyBacktab:
 			focusIndex = (focusIndex + len(focusOrder) - 1) % len(focusOrder)
 			app.SetFocus(focusOrder[focusIndex])
+			return nil
+		case tcell.KeyCtrlL:
+			rerender()
 			return nil
 		case tcell.KeyCtrlS:
 			if valuesPath == "" {
@@ -175,6 +232,87 @@ func loadValuesFile(cliOptions cmd.Options) (string, string) {
 		return candidates[0], ""
 	}
 	return "", ""
+}
+
+func loadTemplateSource(templateName, chartPath string) (string, string) {
+	if templateName == "" {
+		return "Template Source", "Move the cursor onto a rendered manifest line under a '# Source:' header."
+	}
+
+	resolvedPath := resolveTemplatePath(templateName, chartPath)
+	content, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return fmt.Sprintf("Template Source (%s)", resolvedPath), fmt.Sprintf("unable to load template source: %v", err)
+	}
+	return fmt.Sprintf("Template Source (%s)", resolvedPath), string(content)
+}
+
+func resolveTemplatePath(templateName, chartPath string) string {
+	candidates := []string{templateName}
+
+	cleanChartPath := filepath.Clean(chartPath)
+	if filepath.IsAbs(templateName) {
+		return templateName
+	}
+
+	if cleanChartPath != "" {
+		parts := strings.Split(filepath.ToSlash(templateName), "/")
+		if len(parts) > 1 {
+			candidates = append(candidates, filepath.Join(cleanChartPath, filepath.FromSlash(strings.Join(parts[1:], "/"))))
+		}
+		if strings.Contains(filepath.ToSlash(templateName), "/charts/") {
+			idx := strings.Index(filepath.ToSlash(templateName), "/charts/")
+			candidates = append(candidates, filepath.Join(cleanChartPath, filepath.FromSlash(templateName[idx+1:])))
+		}
+		candidates = append(candidates, filepath.Join(cleanChartPath, filepath.FromSlash(templateName)))
+	}
+
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(candidate)
+		if seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	return filepath.Clean(candidates[len(candidates)-1])
+}
+
+func renderedRowForSourceLine(chartLines []string, templateName string, sourceLine int, session *tracer.SummarySession) (int, bool) {
+	bestRow := -1
+	bestDistance := int(^uint(0) >> 1)
+	for row := range chartLines {
+		if selectedTemplateName(chartLines, row) != templateName {
+			continue
+		}
+		fieldPath := inferYAMLPath(chartLines, row)
+		if fieldPath == "" {
+			continue
+		}
+		candidateLine, ok := session.SourceLineForTemplate(templateName, fieldPath)
+		if !ok {
+			continue
+		}
+		distance := candidateLine - sourceLine
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance < bestDistance {
+			bestDistance = distance
+			bestRow = row
+		}
+		if distance == 0 {
+			break
+		}
+	}
+	if bestRow == -1 {
+		return 0, false
+	}
+	return bestRow, true
 }
 
 func selectedTemplateName(lines []string, row int) string {

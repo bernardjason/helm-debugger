@@ -55,9 +55,9 @@ func (s *SummarySession) SummaryForTemplate(templateName, fieldPath string) stri
 		if fieldPath != "" {
 			fmt.Fprintf(&out, "Selected field: %s\n", fieldPath)
 		}
-		if sourceLine, ok := s.exactSourceLine(target, fieldPath); ok {
-			fmt.Fprintf(&out, "Source line: %s:%d\n", target, sourceLine.line)
-			fmt.Fprintf(&out, "Source text: %s\n", sourceLine.text)
+		if sourceLine, ok := s.SourceLineForTemplate(target, fieldPath); ok {
+			fmt.Fprintf(&out, "Source line: %s:%d\n", target, sourceLine)
+			// fmt.Fprintf(&out, "Source text: %f\n", sourceLine.text)
 		}
 
 		ctx := traceContext{ChartPrefix: chartValuePrefix(target), DotExpr: "."}
@@ -85,6 +85,14 @@ func (s *SummarySession) SummaryForTemplate(templateName, fieldPath string) stri
 type sourceLineMatch struct {
 	line int
 	text string
+}
+
+func (s *SummarySession) SourceLineForTemplate(templateName, fieldPath string) (int, bool) {
+	match, ok := s.exactSourceLine(templateName, fieldPath)
+	if !ok {
+		return 0, false
+	}
+	return match.line, true
 }
 
 func (s *SummarySession) exactSourceLine(templateName, fieldPath string) (sourceLineMatch, bool) {

@@ -11,14 +11,15 @@ import (
 type DebuggerView struct {
 	Root            *tview.Flex
 	ChartView       *tview.TextArea
+	SourceView      *tview.TextArea
 	TraceValuesView *tview.TextView
 	ValuesEditor    *tview.TextArea
 	ErrorView       *tview.TextView
 }
 
-// NewDebuggerView builds a split layout with rendered charts on the left and
-// trace-values, an editable values.yaml editor, and errors on the right.
-func NewDebuggerView(chartContent, traceValuesContent, valuesYAML string) *DebuggerView {
+// NewDebuggerView builds a split layout with rendered charts and source on the
+// left, plus trace-values, values.yaml editing, and errors on the right.
+func NewDebuggerView(chartContent, sourceContent, traceValuesContent, valuesYAML string) *DebuggerView {
 	chartView := tview.NewTextArea().
 		SetText(chartContent, false).
 		SetWrap(false)
@@ -26,6 +27,14 @@ func NewDebuggerView(chartContent, traceValuesContent, valuesYAML string) *Debug
 		SetBorder(true).
 		SetTitle("Expanded Helm Charts")
 	chartView.SetInputCapture(readOnlyTextAreaCapture)
+
+	sourceView := tview.NewTextArea().
+		SetText(sourceContent, false).
+		SetWrap(false)
+	sourceView.
+		SetBorder(true).
+		SetTitle("Template Source")
+	sourceView.SetInputCapture(readOnlyTextAreaCapture)
 
 	traceValuesView := tview.NewTextView().
 		SetText(traceValuesContent).
@@ -36,7 +45,7 @@ func NewDebuggerView(chartContent, traceValuesContent, valuesYAML string) *Debug
 		SetTitle("Trace Values")
 
 	valuesEditor := tview.NewTextArea().
-		SetText(valuesYAML, true).
+		SetText(valuesYAML, false).
 		SetWrap(false)
 	valuesEditor.
 		SetBorder(true).
@@ -49,6 +58,11 @@ func NewDebuggerView(chartContent, traceValuesContent, valuesYAML string) *Debug
 		SetBorder(true).
 		SetTitle("Errors")
 
+	leftPane := tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(chartView, 0, 2, true).
+		AddItem(sourceView, 0, 1, false)
+
 	sidebar := tview.NewFlex().
 		SetDirection(tview.FlexRow).
 		AddItem(traceValuesView, 0, 2, false).
@@ -57,12 +71,13 @@ func NewDebuggerView(chartContent, traceValuesContent, valuesYAML string) *Debug
 
 	root := tview.NewFlex().
 		SetDirection(tview.FlexColumn).
-		AddItem(chartView, 0, 3, true).
+		AddItem(leftPane, 0, 3, true).
 		AddItem(sidebar, 0, 2, false)
 
 	return &DebuggerView{
 		Root:            root,
 		ChartView:       chartView,
+		SourceView:      sourceView,
 		TraceValuesView: traceValuesView,
 		ValuesEditor:    valuesEditor,
 		ErrorView:       errorView,
@@ -101,6 +116,11 @@ func (v *DebuggerView) SetChartContent(content string) {
 		cursorAtEnd = true
 	}
 	v.ChartView.SetText(content, cursorAtEnd)
+}
+
+func (v *DebuggerView) SetSourceContent(title, content string) {
+	v.SourceView.SetTitle(title)
+	v.SourceView.SetText(content, false)
 }
 
 func (v *DebuggerView) SetTraceValues(content string) {

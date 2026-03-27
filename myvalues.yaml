@@ -3,12 +3,15 @@ spire-agent:
     registry: SSSSyour-registry.example.com
     repository: your-team/spire-agent
     tag: "1.8.5-customZZZZZZZZ"
+  extraVolumes:
+  - hello: world
+    fred: jack
+    word: up
+  extraVolumeMounts:
+  - word: up
   socketAlternate:
     image:
       registry: your-registry.example.com
       repository: your-team/bash
       tag: "1.8.5-custom"
-this:
-    is:
-      fred: ghello
 
