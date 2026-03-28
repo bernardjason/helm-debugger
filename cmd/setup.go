@@ -43,7 +43,6 @@ func Cmd() (*action.Configuration, Options) {
 	flag.StringVar(&cliOptions.Values, "f", "", "yaml file to override anything set by chart")
 	flag.StringVar(&cliOptions.Values, "values", "", "yaml file to override anything set by chart")
 	flag.StringVar(&cliOptions.Chart, "chart", "./chart", "name of chart to use, defaults to all")
-	flag.StringVar(&cliOptions.Field, "field", "", "yaml field we are interested in")
 	if err := flag.CommandLine.Parse(args); err != nil {
 		log.Fatal(err)
 	}

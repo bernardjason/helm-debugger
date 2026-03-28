@@ -71,20 +71,30 @@ func Run(actionConfig *action.Configuration, cliOptions cmd.Options) error {
 	}
 
 	valuesPath, valuesContent := loadValuesFile(cliOptions)
-	initialTemplate := selectedTemplateName(strings.Split(chartContent, "\n"), 0)
+	chartLines := strings.Split(chartContent, "\n")
+	initialTemplate := selectedTemplateName(chartLines, 0)
 	sourceTitle, sourceContent := loadTemplateSource(initialTemplate, cliOptions.Chart)
 	ui := NewDebuggerView(chartContent, sourceContent, "", valuesContent)
 	ui.SetSourceContent(sourceTitle, sourceContent)
-	if valuesPath != "" {
-		ui.ValuesEditor.SetTitle(fmt.Sprintf("values.yaml (%s)", valuesPath))
+
+	setValuesTitle := func() {
+		title := "values.yaml"
+		if valuesPath != "" {
+			title = fmt.Sprintf("values.yaml (%s)", valuesPath)
+		}
+		ui.ValuesEditor.SetTitle(title)
 	}
+	setValuesTitle()
 
 	app := tview.NewApplication().EnableMouse(true).EnablePaste(true)
 	focusOrder := []tview.Primitive{ui.ChartView, ui.SourceView, ui.ValuesEditor}
 	focusIndex := 0
+	focusNext := func() {
+		focusIndex = (focusIndex + 1) % len(focusOrder)
+		app.SetFocus(focusOrder[focusIndex])
+	}
 	errorMessage := "Press Ctrl-L to sync edited values into the rendered output."
 	syncEnabled := true
-	chartLines := strings.Split(chartContent, "\n")
 	currentTemplate := initialTemplate
 	updatingFromChart := false
 	updatingFromSource := false
@@ -95,14 +105,14 @@ func Run(actionConfig *action.Configuration, cliOptions cmd.Options) error {
 			if offset < 0 {
 				offset = 0
 			}
-			ui.SourceView.SetOffset(offset, 0)
+			ui.SourceView.SetSelectedRow(offset)
 		} else {
-			ui.SourceView.SetOffset(0, 0)
+			ui.SourceView.SetSelectedRow(0)
 		}
 	}
 
 	updateTrace := func() {
-		row, _, _, _ := ui.ChartView.GetCursor()
+		row := ui.ChartView.SelectedRow()
 		templateName := selectedTemplateName(chartLines, row)
 		fieldPath := inferYAMLPath(chartLines, row)
 		currentTemplate = templateName
@@ -131,17 +141,13 @@ func Run(actionConfig *action.Configuration, cliOptions cmd.Options) error {
 		if !syncEnabled || updatingFromChart || currentTemplate == "" {
 			return
 		}
-		sourceRow, _, _, _ := ui.SourceView.GetCursor()
+		sourceRow := ui.SourceView.SelectedRow()
 		renderedRow, ok := renderedRowForSourceLine(chartLines, currentTemplate, sourceRow+1, traceSession)
 		if !ok {
 			return
 		}
 		updatingFromSource = true
-		offset := renderedRow - 2
-		if offset < 0 {
-			offset = 0
-		}
-		ui.ChartView.SetOffset(offset, 0)
+		ui.ChartView.SetSelectedRow(renderedRow)
 		updatingFromSource = false
 	}
 
@@ -162,56 +168,218 @@ func Run(actionConfig *action.Configuration, cliOptions cmd.Options) error {
 		updateErrors()
 	}
 
+	showPathPrompt := func(title, buttonLabel, initialValue string, onSubmit func(string) error) {
+		input := tview.NewInputField().
+			SetLabel("Path: ").
+			SetText(initialValue)
+		form := tview.NewForm().
+			AddFormItem(input).
+			AddButton(buttonLabel, func() {
+				path := strings.TrimSpace(input.GetText())
+				if path == "" {
+					errorMessage = "A file path is required."
+					updateErrors()
+					return
+				}
+				if err := onSubmit(path); err != nil {
+					errorMessage = err.Error()
+				} else {
+					errorMessage = ""
+				}
+				ui.Root.RemovePage("prompt")
+				updateErrors()
+				app.SetFocus(focusOrder[focusIndex])
+			}).
+			AddButton("Cancel", func() {
+				ui.Root.RemovePage("prompt")
+				app.SetFocus(focusOrder[focusIndex])
+			})
+		form.SetBorder(true).SetTitle(title)
+		modal := centeredPrimitive(form, 80, 7)
+		ui.Root.AddPage("prompt", modal, true, true)
+		app.SetFocus(input)
+	}
+
+	showHelpModal := func() {
+		helpText := strings.Join([]string{
+			"Charts have to be local on disk for debugging",
+			"Navigation",
+			"",
+			"Tab: cycle focus between rendered chart, source, and values editor.",
+			"Shift-Tab: move focus backwards.",
+			"Arrow keys, Page Up/Down, Home, End: move within the focused pane.",
+			"Enter on Template Source: sync the rendered chart to the selected source line.",
+			"",
+			"Values",
+			"",
+			"Ctrl-O: open a values.yaml file into the editor.",
+			"Ctrl-N: create a new values.yaml file and switch the editor to it.",
+			"Ctrl-L: render the current values editor content into the chart.",
+			"Ctrl-S: save the values editor to the active file path.",
+			"",
+			"Other",
+			"",
+			"Use the Trace Values pane to inspect the selected rendered field.",
+			"Use the Errors pane to review Helm warnings, render failures, and save errors.",
+			"Ctrl-C: quit the application.",
+			"",
+			"Helm commands",
+			"helm list -A",
+			"helm status <release> -n <namespace>",
+			"helm repo add <name> <repo url>",
+			"helm repo update",
+			"helm search repo <name> --versions",
+			"helm pull <name>/<chart> --version <version> --untar",
+		}, "\n")
+
+		content := tview.NewTextView().
+			SetDynamicColors(true).
+			SetScrollable(true).
+			SetWrap(true).
+			SetText(helpText)
+		content.SetBorder(true).SetTitle("Help")
+
+		closeButton := tview.NewButton("Close")
+		closeButton.SetSelectedFunc(func() {
+			ui.Root.RemovePage("help")
+			app.SetFocus(focusOrder[focusIndex])
+		})
+
+		body := tview.NewFlex().
+			SetDirection(tview.FlexRow).
+			AddItem(content, 0, 1, true).
+			AddItem(closeButton, 1, 0, false)
+		body.SetBorder(true).SetTitle("Help")
+		body.SetFullScreen(true)
+
+		modal := centeredPrimitive(body, 90, 20)
+		ui.Root.AddAndSwitchToPage("help", modal, true)
+		app.SetFocus(closeButton)
+	}
+
+	openValuesFile := func(path string) error {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("Open failed: %w", err)
+		}
+		valuesPath = path
+		ui.SetValuesYAML(string(content))
+		setValuesTitle()
+		return nil
+	}
+
+	createValuesFile := func(path string) error {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("Create failed: %s already exists", path)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("Create failed: %w", err)
+		}
+		if dir := filepath.Dir(path); dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("Create failed: %w", err)
+			}
+		}
+		if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+			return fmt.Errorf("Create failed: %w", err)
+		}
+		valuesPath = path
+		ui.SetValuesYAML("")
+		setValuesTitle()
+		return nil
+	}
+
+	openAction := func() {
+		showPathPrompt("Open values.yaml", "Open", valuesPath, openValuesFile)
+	}
+	newAction := func() {
+		showPathPrompt("Create values.yaml", "Create", filepath.Join(filepath.Dir(valuesPath), "values.yaml"), createValuesFile)
+	}
+	helpAction := func() {
+		showHelpModal()
+	}
+	syncAction := func() {
+		rerender()
+	}
+	saveAction := func() {
+		if valuesPath == "" {
+			errorMessage = "No writable values.yaml file resolved for this chart."
+			updateErrors()
+			return
+		}
+		if err := os.WriteFile(valuesPath, []byte(ui.ValuesYAML()), 0o644); err != nil {
+			errorMessage = fmt.Sprintf("Save failed: %v", err)
+		} else {
+			errorMessage = ""
+		}
+		updateErrors()
+	}
+	quitAction := func() {
+		app.Stop()
+	}
+
+	ui.OpenButton.SetSelectedFunc(openAction)
+	ui.NewButton.SetSelectedFunc(newAction)
+	ui.HelpButton.SetSelectedFunc(helpAction)
+	ui.SyncButton.SetSelectedFunc(syncAction)
+	ui.SaveButton.SetSelectedFunc(saveAction)
+	ui.FocusButton.SetSelectedFunc(focusNext)
+	ui.QuitButton.SetSelectedFunc(quitAction)
+
 	ui.ChartView.SetMovedFunc(func() {
 		if !syncEnabled || updatingFromSource {
 			return
 		}
 		updateTrace()
 	})
-	ui.SourceView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEnter {
-			syncChartToSource()
-			return nil
-		}
-		return readOnlyTextAreaCapture(event)
-	})
 	updateTrace()
 	updateErrors()
 
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
+		case tcell.KeyEnter:
+			if focusIndex == 1 {
+				syncChartToSource()
+				return nil
+			}
+			return event
 		case tcell.KeyCtrlC:
-			app.Stop()
+			quitAction()
 			return nil
 		case tcell.KeyTAB:
-			focusIndex = (focusIndex + 1) % len(focusOrder)
-			app.SetFocus(focusOrder[focusIndex])
+			focusNext()
 			return nil
 		case tcell.KeyBacktab:
 			focusIndex = (focusIndex + len(focusOrder) - 1) % len(focusOrder)
 			app.SetFocus(focusOrder[focusIndex])
 			return nil
 		case tcell.KeyCtrlL:
-			rerender()
+			syncAction()
+			return nil
+		case tcell.KeyCtrlO:
+			openAction()
+			return nil
+		case tcell.KeyCtrlN:
+			newAction()
 			return nil
 		case tcell.KeyCtrlS:
-			if valuesPath == "" {
-				errorMessage = "No writable values.yaml file resolved for this chart."
-				updateErrors()
-				return nil
-			}
-			if err := os.WriteFile(valuesPath, []byte(ui.ValuesYAML()), 0o644); err != nil {
-				errorMessage = fmt.Sprintf("Save failed: %v", err)
-			} else {
-				errorMessage = ""
-			}
-			updateErrors()
+			saveAction()
 			return nil
 		}
 		return event
 	})
 
 	return app.SetRoot(ui.Root, true).SetFocus(ui.ChartView).Run()
+}
+
+func centeredPrimitive(p tview.Primitive, width, height int) tview.Primitive {
+	return tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().
+			SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 1, false).
+			AddItem(p, height, 1, true).
+			AddItem(nil, 0, 1, false), width, 1, true).
+		AddItem(nil, 0, 1, false)
 }
 
 func loadValuesFile(cliOptions cmd.Options) (string, string) {
