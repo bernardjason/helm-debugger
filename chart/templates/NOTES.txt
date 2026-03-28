@@ -1,0 +1,3 @@
+1. The test chart has been rendered for helm-debugger.
+2. Open the `values.yaml` editor in the TUI and change `image.tag`, `replicaCount`, or `config.logLevel`.
+3. Press `Ctrl-L` to rerender.
