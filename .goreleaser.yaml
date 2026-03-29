@@ -1,0 +1,44 @@
+version: 2
+
+project_name: helm-debugger
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: helm-debugger
+    main: .
+    binary: helm-debugger
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - README.md
+      - LICENSE
+
+release:
+  github:
+    owner: bernardjason
+    name: helm-debugger
+  name_template: '{{ .Tag }}'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'

@@ -3,6 +3,9 @@ fullnameOverride: ""
 
 replicaCount: 1
 
+testIf:
+  condition: hello
+
 image:
   repository: nginx
   tag: "1.27.0"
@@ -20,6 +23,12 @@ config:
 
 labels: {}
 
+requiredValue: "this value is required"
+
+enabled: true
+
+env: dev
+
 podAnnotations: {}
 
 resources:
@@ -29,3 +38,15 @@ resources:
   requests:
     cpu: 50m
     memory: 64Mi
+
+someTemplate: 'templated-value={{ .Values.env }}'
+jsonString: '{"hello":"world","n":123}'
+
+mapData:
+  my-key: "my-value"
+
+featureFlag: true
+numberString: "42"
+floatString: "3.14"
+
+semverTarget: ">=1.20.0"

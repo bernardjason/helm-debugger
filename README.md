@@ -14,6 +14,7 @@ The TUI is designed to answer three practical questions:
 - What did Helm render?
 - Which template file did this rendered line come from?
 - Which values are likely involved in producing this output?
+- Allows you to play with a values file to test and debug value overrides
 
 The app renders the chart with Helm, shows the expanded manifests, lets you move through the output, and keeps the source and trace panes in sync.
 

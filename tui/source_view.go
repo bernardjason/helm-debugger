@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	templateStringPattern  = regexp.MustCompile(`"[^"]*"|'[^']*'`)
-	templateKeywordPattern = regexp.MustCompile(`(^|[^[:alnum:]_])(include|tpl|define|range|with|if|end)([^[:alnum:]_]|$)`)
+	templateStringPattern = regexp.MustCompile(`"[^"]*"|'[^']*'`)
+	// templateKeywordPattern = regexp.MustCompile(`(^|[^[:alnum:]_])(include|tpl|define|range|with|if|end|else|)([^[:alnum:]_]|$)`)
+	templateKeywordPattern = regexp.MustCompile(`(^|[^[:alnum:]_])(include|template|required|default|fail|lookup|if|else|end|and|or|not|eq|ne|lt|le|gt|ge|quote|upper|lower|title|trim|trimSuffix|trimPrefix|replace|contains|hasPrefix|hasSuffix|printf|print|println|list|dict|index|toYaml|nindent|indent|toJson|toPrettyJson|fromJson|coalesce|ternary|int|int64|float64|toString|b64enc|b64dec|now|date|dateInZone|range|with|tpl|semverCompare|randAlpha|randNumeric|sha256sum|)([^[:alnum:]_]|$)`)
 	templateValuesPattern  = regexp.MustCompile(`(^|[^[:alnum:]_])(\.Values)([^[:alnum:]_]|$)`)
 )
 
@@ -137,9 +138,9 @@ func (v *SourceCodeView) regionID(row int) string {
 
 func renderSourceLine(line string) string {
 	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "{{") && strings.HasSuffix(trimmed, "}}") {
-		return `[orange]` + escapeTView(line) + `[-]`
-	}
+	// if strings.HasPrefix(trimmed, "{{") && strings.HasSuffix(trimmed, "}}") {
+	// 	return `[red]` + escapeTView(line) + `[-]`
+	// }
 	if strings.HasPrefix(trimmed, "#") {
 		return `[gray]` + escapeTView(line) + `[-]`
 	}
@@ -151,14 +152,104 @@ func renderSourceLine(line string) string {
 	return highlightTemplateSyntax(escapeTView(line))
 }
 
-// TO DO TIGHTEN UP COLOUR HIGHLIGHTING
+// // TO DO TIGHTEN UP COLOUR HIGHLIGHTING
+// func highlightTemplateSyntax(s string) string {
+// 	s = templateStringPattern.ReplaceAllStringFunc(s, func(match string) string {
+// 		return `[gold]` + match + `[-]`
+// 	})
+// 	s = templateValuesPattern.ReplaceAllString(s, `${1}[pink]${2}[-]${3}`)
+// 	s = templateKeywordPattern.ReplaceAllString(s, `${1}[teal]${2}[-]${3}`)
+// 	s = strings.ReplaceAll(s, "{{", `[orange]{{[-]`)
+// 	s = strings.ReplaceAll(s, "}}", `[orange]}}[-]`)
+
+// 	return s
+// }
+
 func highlightTemplateSyntax(s string) string {
-	s = templateStringPattern.ReplaceAllStringFunc(s, func(match string) string {
-		return `[gold]` + match + `[-]`
-	})
-	s = templateValuesPattern.ReplaceAllString(s, `${1}[orchid]${2}[-]${3}`)
-	s = templateKeywordPattern.ReplaceAllString(s, `${1}[teal]${2}[-]${3}`)
-	s = strings.ReplaceAll(s, "{{", `[orange]{{[-]`)
-	s = strings.ReplaceAll(s, "}}", `[orange]}}[-]`)
-	return s
+	var word string = ""
+	var response string = ""
+	var doubleQuotes = false
+	var singleQuotes = false
+	var colourStack = make(stack, 0)
+
+	handleKey := func() {
+		if len(word) > 0 && word[len(word)-1] == ':' {
+			response = response + fmt.Sprintf("[blue]%s[-]%s ", word, colourStack.Peek())
+		} else if strings.HasPrefix(word, ".Values") {
+			response = response + fmt.Sprintf("[white]%s[-]%s ", word, colourStack.Peek())
+		} else {
+			response = response + word + " "
+		}
+	}
+
+	for _, c := range s {
+		if c == '"' {
+			doubleQuotes = !doubleQuotes
+		}
+		if c == '\'' {
+			singleQuotes = !singleQuotes
+		}
+		switch word {
+		case "{{":
+			colourStack = colourStack.Push("[orange]")
+			response = response + fmt.Sprintf("[orange]%s", word)
+			word = ""
+		case "}}":
+			response = response + fmt.Sprintf("%s[-]", word)
+			colourStack, _ = colourStack.Pop()
+			word = ""
+		}
+		if c != ' ' {
+			word = word + string(c)
+		} else {
+			if !doubleQuotes && !singleQuotes {
+				switch word {
+				case "include", "template", "required", "default", "fail", "lookup", "if", "else", "end", "and", "or", "not", "eq", "ne",
+					"lt", "le", "gt", "ge", "quote", "upper", "lower", "title", "trim", "trimSuffix", "trimPrefix", "replace", "contains",
+					"hasPrefix", "hasSuffix", "printf", "print", "println", "list", "dict", "index", "toYaml", "nindent", "indent", "toJson",
+					"toPrettyJson", "fromJson", "coalesce", "ternary", "int", "int64", "float64", "toString", "b64enc", "b64dec", "now", "date",
+					"dateInZone", "range", "with", "tpl", "semverCompare", "randAlpha", "randNumeric", "sha256sum":
+					response = response + fmt.Sprintf("[teal]%s[-]%s ", word, colourStack.Peek())
+				default:
+					handleKey()
+				}
+			} else {
+				handleKey()
+			}
+			word = ""
+		}
+	}
+	switch word {
+	case "{{":
+		colourStack = colourStack.Push("[orange]")
+		response = response + fmt.Sprintf("[orange]%s%s", word, colourStack.Peek())
+	case "}}":
+		response = response + fmt.Sprintf("%s[-]", word)
+		colourStack, _ = colourStack.Pop()
+	default:
+		response = response + word
+	}
+
+	return response
+}
+
+type stack []string
+
+func (s stack) Push(v string) stack {
+	return append(s, v)
+}
+
+func (s stack) Pop() (stack, string) {
+	l := len(s)
+	if l == 0 {
+		return s, ""
+	}
+	return s[:l-1], s[l-1]
+}
+func (s stack) Peek() string {
+	l := len(s)
+	if l == 0 {
+		return ""
+	}
+	return s[l-1]
 }
