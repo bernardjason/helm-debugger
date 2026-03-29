@@ -1,0 +1,134 @@
+{{- $root := . -}}
+{{- $list := list "a" "b" "c" -}}
+{{- $dict := dict "alpha" "A" "beta" "B" "nested" (dict "x" 1) -}}
+{{- $parsedJson := fromJson .Values.jsonString -}}
+{{- $typeInt := int .Values.numberString -}}
+{{- $typeInt64 := int64 .Values.numberString -}}
+{{- $typeFloat := float64 .Values.floatString -}}
+{{- $typeString := toString $typeInt -}}
+{{- $lookupObj := lookup "v1" "ConfigMap" .Release.Namespace "does-not-exist" -}}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "helm-command-lab.fullname" . }}
+  labels:
+{{ include "helm-command-lab.labels" . | nindent 4 }}
+data:
+  replicas: {{ .Values.replicaCount }}
+  include: {{ include "helm-command-lab.name" . | quote }}
+  template: {{ template "helm-command-lab.name" . | quote }}
+  required: {{ required "requiredValue must be set" .Values.requiredValue | quote }}
+  default: {{ default "fallback-tag" .Values.image.tag | quote }}
+  fail: {{ include "helm-command-lab.fail-demo" . | quote }}
+  lookup-kind: {{ default "empty" $lookupObj.kind | quote }}
+
+  if-else-end: |
+    {{- if .Values.enabled }}
+    enabled branch
+    {{- else }}
+    disabled branch
+    {{- end }}
+
+  and-or-not: {{ ternary "bool-true" "bool-false" (and .Values.enabled (or .Values.featureFlag (not false))) | quote }}
+
+  eq: {{ ternary "true" "false" (eq .Values.env "dev") | quote }}
+  ne: {{ ternary "true" "false" (ne .Values.env "prod") | quote }}
+  lt: {{ ternary "true" "false" (lt 1 2) | quote }}
+  le: {{ ternary "true" "false" (le 2 2) | quote }}
+  gt: {{ ternary "true" "false" (gt 3 2) | quote }}
+  ge: {{ ternary "true" "false" (ge 3 3) | quote }}
+
+  quote: {{ quote .Values.host }}
+  upper: {{ upper .Values.env | quote }}
+  lower: {{ lower "MIXED" | quote }}
+  title: {{ title "hello world from helm" | quote }}
+  trim: {{ trim "  padded  " | quote }}
+  trimSuffix: {{ trimSuffix ".yaml" "test.yaml" | quote }}
+  trimPrefix: {{ trimPrefix "pre-" "pre-value" | quote }}
+  replace: {{ replace "dev" "prod" "dev-environment" | quote }}
+  contains: {{ ternary "true" "false" (contains "amp" "example") | quote }}
+  hasPrefix: {{ ternary "true" "false" (hasPrefix "ex" "example") | quote }}
+  hasSuffix: {{ ternary "true" "false" (hasSuffix "ple" "example") | quote }}
+
+  printf: {{ printf "%s:%v" .Values.service.type .Values.service.port | quote }}
+  print: {{ print "a" "-" "b" "-" "c" | quote }}
+  println: {{ println "line1" "line2" | quote }}
+
+  list: {{ $list | toJson | quote }}
+  dict: {{ $dict | toJson | quote }}
+  index-list: {{ index $list 1 | quote }}
+  index-dict: {{ index $dict "alpha" | quote }}
+
+  toYaml: |
+{{ toYaml .Values.resources | indent 4 }}
+  nindent-demo: |
+    parent:
+{{ toYaml .Values.resources | nindent 6 }}
+  indent-demo: |
+    parent:
+{{ toYaml .Values.resources | indent 6 }}
+
+  toJson: {{ toJson .Values.items | quote }}
+  toPrettyJson: |
+{{ toPrettyJson .Values.items | indent 4 }}
+  fromJson-hello: {{ index $parsedJson "hello" | quote }}
+
+  coalesce: {{ coalesce .Values.image.tag .Chart.AppVersion "final-fallback" | quote }}
+  ternary: {{ ternary "yes" "no" .Values.featureFlag | quote }}
+
+  int: {{ $typeInt | quote }}
+  int64: {{ $typeInt64 | quote }}
+  float64: {{ $typeFloat | quote }}
+  toString: {{ $typeString | quote }}
+
+  b64enc: {{ "hello" | b64enc | quote }}
+  b64dec: {{ "aGVsbG8=" | b64dec | quote }}
+
+  now: {{ now | quote }}
+  date: {{ now | date "2026-03-29" | quote }}
+  dateInZone: {{ now | quote | dateInZone "2026-03-29 09:00:00 BST" "Europe/London" | quote }}
+
+  range: |
+    {{- range .Values.items }}
+    - {{ .name }}={{ .value }}
+    {{- end }}
+
+  with: |
+    {{- with .Values.image }}
+    repository={{ .repository }}
+    tag={{ .tag | default $.Chart.AppVersion }}
+    {{- end }}
+
+  tpl: {{ tpl .Values.someTemplate . | quote }}
+
+  semverCompare: {{ ternary "true" "false" (semverCompare .Values.semverTarget .Capabilities.KubeVersion.Version) | quote }}
+
+  randAlpha: {{ randAlpha 8 | quote }}
+  randNumeric: {{ randNumeric 8 | quote }}
+  sha256sum: {{ sha256sum "hello" | quote }}
+
+  filesGet: {{ .Files.Get "files/sample.txt" | quote }}
+
+  release-name: {{ .Release.Name | quote }}
+  chart-name: {{ .Chart.Name | quote }}
+  chart-version: {{ .Chart.Version | quote }}
+  app-version: {{ .Chart.AppVersion | quote }}
+  template-name: {{ .Template.Name | quote }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "helm-command-lab.fullname" . }}-control-flow
+data:
+  nested-range-with-if: |
+    {{- range $i, $item := .Values.items }}
+    {{- with $item }}
+    {{- if gt .value 1 }}
+    item {{ $i }}: {{ .name }} is greater than 1
+    {{- else }}
+    item {{ $i }}: {{ .name }} is not greater than 1
+    {{- end }}
+    {{- end }}
+    {{- end }}

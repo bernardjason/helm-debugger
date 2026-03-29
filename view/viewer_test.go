@@ -62,7 +62,8 @@ service:
 		"image: \"busybox:1.36\"",
 		"value: \"debug\"",
 		"port: 8080",
-		"# Source: test-chart/templates/deployment.yaml",
+		"title: \"Hello World From Helm\"",
+		"nindent-demo: |",
 	}
 
 	for _, want := range checks {

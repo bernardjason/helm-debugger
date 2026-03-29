@@ -3,6 +3,11 @@ kind: ConfigMap
 metadata:
   name: {{ include "test-chart.fullname" . }}
   labels:
+    {{- if eq .Values.testIf.condition "hello" }}
+    hello: world
+    {{- else }}
+    default: some default value
+    {{- end}}
     {{- include "test-chart.labels" . | nindent 4 }}
 data:
   app.yaml: |

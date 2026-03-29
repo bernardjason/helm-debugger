@@ -4,6 +4,7 @@
         "chartutil",
         "gotpl",
         "missingkey",
+        "nindent",
         "rivo",
         "Subcharts",
         "tview"

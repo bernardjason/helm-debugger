@@ -19,3 +19,32 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{ toYaml . }}
 {{- end }}
 {{- end -}}
+
+
+
+{{- define "helm-command-lab.name" -}}
+.Chart.Name
+{{- end -}}
+
+{{- define "helm-command-lab.fullname" -}}
+{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "helm-command-lab.image" -}}
+{{- $repo := .Values.image.repository -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- end -}}
+
+{{- define "helm-command-lab.labels" -}}
+app.kubernetes.io/name: {{ include "helm-command-lab.name" . | quote }}
+app.kubernetes.io/instance: {{ .Release.Name | quote }}
+{{- end -}}
+
+{{- define "helm-command-lab.fail-demo" -}}
+{{- if .Values.neverTrueForFail }}
+{{ fail "intentional fail demo" }}
+{{- else }}
+fail-disabled
+{{- end }}
+{{- end -}}
