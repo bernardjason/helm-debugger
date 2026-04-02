@@ -1,4 +1,4 @@
-version: 2
+version: 1
 
 project_name: helm-debugger
 
@@ -33,7 +33,7 @@ archives:
 release:
   github:
     owner: bernardjason
-    name: helm-debugger
+    repo: helm-debugger
   name_template: '{{ .Tag }}'
 
 changelog:
