@@ -33,7 +33,6 @@ archives:
 release:
   github:
     owner: bernardjason
-    repo: helm-debugger
   name_template: '{{ .Tag }}'
 
 changelog:
